@@ -1,36 +1,20 @@
-#include <sys/socket.h>  
-#include <sys/epoll.h>  
 #include <netinet/in.h>  
 #include <arpa/inet.h>  
-#include <fcntl.h>  
-#include <unistd.h>  
 #include <stdio.h>  
 #include <errno.h>  
 #include <stdlib.h>  
-#include <sys/types.h>  
 #include <sys/wait.h>  
 #include <string.h>
 #include <pthread.h>
-#include "iniparser.h"
+#include <unistd.h>  
+#include "conn.h"
+#include "f_epoll.h"
+#include "net.h"
+#include "conf.h"
 
 using namespace std;  
 
-int setnonblocking(int sock)  
-{  
-    int opts;  
-    opts = fcntl(sock,F_GETFL);  
-    if (opts < 0) {
-        perror("fcntl(sock,GETFL)");  
-        return -1;  
-    }
-
-    opts |= O_NONBLOCK;  
-    if (fcntl(sock,F_SETFL,opts) < 0) {
-        perror("fcntl(sock,SETFL,opts)");  
-        return -1;  
-    }
-    return 0;
-}
+int listenfd;
 
 /**
  * wait与waitpid的主要区别：
@@ -47,74 +31,6 @@ void sig_chld(int signo)
         printf("child %d terminated with status %d\n", pid, stat);
 
     return;
-}
-
-int listenfd;
-int tcplisten(int port, int backlog = 5)
-{
-    struct sockaddr_in serveraddr;  
-    bzero(&serveraddr, sizeof(serveraddr));  
-    serveraddr.sin_family = AF_INET;  
-    serveraddr.sin_addr.s_addr = htonl(INADDR_ANY); //inet_addr("0.0.0.0");
-    serveraddr.sin_port=htons(port);  
-
-    int listenfd = socket(AF_INET, SOCK_STREAM, 0);  
-    if (listenfd <= 0) {
-        perror("socket");  
-        return -1;
-    }
-
-    // 地址重用  
-    int nOptVal = 1;  
-    socklen_t nOptLen = sizeof(int);  
-    if (-1 == ::setsockopt(listenfd, SOL_SOCKET, SO_REUSEADDR, &nOptVal, nOptLen))  
-    {
-        perror("setsockopt");  
-        close(listenfd);
-        return -1;
-    }
-
-    //把socket设置为非阻塞方式  
-    if (setnonblocking(listenfd) < 0) {
-        close(listenfd);
-        return -1;
-    }
-
-    bind(listenfd,(sockaddr *)&serveraddr, sizeof(serveraddr));  
-    listen(listenfd, backlog);
-    return listenfd;
-}
-
-struct ini_s {
-    short listen_port;
-    int backlog;
-
-    int nworkers;
-    int nepolls_per_worker;
-    int nconn_per_epoll;
-    int nthreads_per_epoll;
-};
-
-struct ini_s global_ini;
-
-int loadconfig(const char* ini_name)
-{
-    dictionary * ini ;
-
-    ini = iniparser_load(ini_name);
-    if (ini == NULL) {
-        fprintf(stderr, "cannot parse file: %s\n", ini_name);
-        return -1 ;
-    }
-    iniparser_dump(ini, stdout);
-    global_ini.listen_port = iniparser_getint(ini, "listen:port", -1);
-    global_ini.backlog = iniparser_getint(ini, "listen:backlog", 1);
-    global_ini.nworkers = iniparser_getint(ini, "concurrency:nworkers", 1);
-    global_ini.nepolls_per_worker = iniparser_getint(ini, "concurrency:nepolls_per_worker", 1);
-    global_ini.nconn_per_epoll = iniparser_getint(ini, "concurrency:nconn_per_epoll", 1);
-    global_ini.nthreads_per_epoll = iniparser_getint(ini, "concurrency:nthreads_per_epoll", 1);
-    iniparser_freedict(ini);
-    return 0;
 }
 
 int CreateWorker(int nWorker)  
@@ -168,89 +84,6 @@ int CreateWorker(int nWorker)
     return 1;
 }
 
-typedef struct task_t  
-{  
-    int fd;
-    bool boneshot; //set EPOLLONESHOT?
-    char buffer[100];
-    int n;
-}task_t;  
-
-int f_epoll_add(int epfd, int fd, int events, void* ptr)
-{
-    /**
-     * typedef union epoll_data {  
-     *     void *ptr;  
-     *     int fd;  
-     *     __uint32_t u32;  
-     *     __uint64_t u64;  
-     * } epoll_data_t;  
-     *   
-     * struct epoll_event {  
-     *     __uint32_t events; #Epoll events
-     *     epoll_data_t data; #User data variable
-     * };  
-
-     * events可以是以下几个宏的集合：
-     * EPOLLIN：       触发该事件，表示对应的文件描述符上有可读数据。(包括对端SOCKET正常关闭)；
-     * EPOLLOUT：      触发该事件，表示对应的文件描述符上可以写数据；
-     * EPOLLPRI：      表示对应的文件描述符有紧急的数据可读（这里应该表示有带外数据到来）；
-     * EPOLLERR：      表示对应的文件描述符发生错误；
-     * EPOLLHUP：      表示对应的文件描述符被挂断；
-     * EPOLLET：       将EPOLL设为边缘触发(Edge Triggered)模式，这是相对于水平触发(Level Triggered)来说的。
-     * EPOLLONESHOT：  只监听一次事件，当监听完这次事件之后，如果还需要继续监听这个socket的话，需要再次把这个socket加入到EPOLL队列里。
-     */
-    if (!ptr) {
-        return -1;
-    }
-
-    task_t* task = (task_t*)ptr;
-    if (!task->boneshot) return 0;//不需要再次注册
-
-    struct epoll_event ev;
-    ev.data.fd = fd;
-    ev.data.ptr = ptr;
-    if (task->boneshot)
-        ev.events = events|EPOLLONESHOT;
-
-    if (global_ini.nthreads_per_epoll == 1) {
-        task->boneshot = false;
-    }
-
-    //注册epoll事件
-    epoll_ctl(epfd,EPOLL_CTL_ADD,fd,&ev);
-
-    return 0;
-}
-
-int f_epoll_del(int epfd, int fd)
-{
-    epoll_ctl(epfd,EPOLL_CTL_DEL,fd,NULL);
-    return 0;
-}
-
-void DispatchConn(int connfd, int * epfds)
-{
-    task_t* task = (task_t*)malloc(sizeof(task_t));
-    task->fd = connfd;
-    task->n = 0;
-    task->boneshot = true;
-
-    int epfd = epfds[connfd%global_ini.nepolls_per_worker];
-    f_epoll_add(epfd, connfd, EPOLLIN|EPOLLOUT|EPOLLET, task);
-}
-
-void CloseConn(int epfd, int fd, void* ptr)
-{
-    if (!ptr) return;
-
-    task_t* task = (task_t*)ptr;
-    free(task);
-
-    f_epoll_del(epfd, fd);
-    close(fd);
-}
-
 void* ThreadRoutine(void* args);
 void WorkerRoutine()
 {
@@ -289,10 +122,10 @@ void WorkerRoutine()
         }
     }
 
-    task_t task;
-    task.fd = listenfd;
-    task.boneshot = true;
-    f_epoll_add(epfds[0], listenfd, EPOLLIN|EPOLLET, &task);
+    ///start accepting in main thread
+    tcpstart(listenfd, epfds[0]);
+    printf("listenfd = %d, epfd = %d\n",
+            listenfd, epfds[0]);
     ThreadRoutine((void*)epfds);
 }
 
@@ -300,13 +133,16 @@ void* ThreadRoutine(void* args)
 {
     static int thread_no = 0;
     __sync_fetch_and_add(&thread_no, 1);
-    printf("thread #%d(%u) of worker %d!\n", thread_no, (unsigned)pthread_self(), ::getpid());
 
-    struct epoll_event* wait_evs = (struct epoll_event*)malloc(global_ini.nconn_per_epoll * sizeof(struct epoll_event));
-    memset((void*)wait_evs, 0, global_ini.nconn_per_epoll * sizeof(struct epoll_event));
+    //struct epoll_event* wait_evs = (struct epoll_event*)malloc(global_ini.nconn_per_epoll * sizeof(struct epoll_event));
+    //memset((void*)wait_evs, 0, global_ini.nconn_per_epoll * sizeof(struct epoll_event));
+    struct epoll_event wait_evs[3];
 
     int* epfds = (int*)args;
     int epfd = epfds[thread_no%global_ini.nepolls_per_worker];
+    printf("thread #%d(%u) of worker %d, epfd = %d!\n",
+            thread_no, (unsigned)pthread_self(), ::getpid(),
+            epfd);
 
     while(true)
     {
@@ -318,77 +154,58 @@ void* ThreadRoutine(void* args)
          * @return 该函数返回需要处理的事件数目，如返回0表示已超时。
          *         返回的事件集合在events数组中，数组中实际存放的成员个数是函数的返回值。返回0表示已经超时。
          */
-        int nfds = epoll_wait(epfd, wait_evs, global_ini.nconn_per_epoll, 600);  
+        //int nfds = epoll_wait(epfd, wait_evs, global_ini.nconn_per_epoll, 20);  
+        int nfds = epoll_wait(epfd, wait_evs, 3, 20);  
         int conns = 0;
 
         //处理所发生的所有事件
         for(int i = 0; i < nfds; ++i)
-        {  
-            printf("[%u]epoll_wait, fd = %d, event = %d\n", (unsigned)pthread_self(), wait_evs[i].data.fd, wait_evs[i].events);
+        {
             if (wait_evs[i].data.fd == listenfd)
             {
-                if (thread_no != 0) {
-                    printf("[%u]ERROR: listenfd wakeup in thread #%d", (unsigned)pthread_self(), thread_no);
-                    continue;
-                }
-
                 socklen_t clilen;  
                 struct sockaddr_in clientaddr;  
-
-                int connfd = accept(listenfd, (struct sockaddr*)&clientaddr, &clilen);  
+                int connfd = tcpaccept(listenfd, wait_evs[i].data.ptr,
+                        (struct sockaddr*)&clientaddr, &clilen);
                 if (connfd < 0) {
-                    printf("[%u]connfd<0, listenfd = %d, error = %s\n",
-                            (unsigned)pthread_self(), listenfd, strerror(errno));  
+                    printf("[%u]accept fail, listenfd = %d, error = %s\n",
+                        (unsigned)pthread_self(), listenfd, strerror(errno));
                     continue;
+                }else {
+                    ++conns;
+                    printf("[%u]new connection from %s:%d, fd = %d, conns = %d\n",
+                        (unsigned)pthread_self(),
+                        inet_ntoa(clientaddr.sin_addr), 
+                        ntohs(clientaddr.sin_port),
+                        connfd, conns);
                 }
-                else {
-                    printf("[%u]new connection(%d) from %s:%d, fd = %d\n",
-                            (unsigned)pthread_self(), ++conns, inet_ntoa(clientaddr.sin_addr), 
-                            ntohs(clientaddr.sin_port), connfd);
-                }
-                setnonblocking(connfd);
+
                 DispatchConn(connfd, epfds);
-                f_epoll_add(epfd, listenfd, EPOLLIN|EPOLLET, wait_evs[i].data.ptr);
             }  
             else if (wait_evs[i].events & EPOLLIN)  
-            {  
-                task_t* task = (task_t*)wait_evs[i].data.ptr;
-                int sockfd = task->fd;
-                printf("[%u]EPOLLIN, fd = %d\n", (unsigned)pthread_self(), sockfd);
-
-                if ( (task->n = read(sockfd, task->buffer, 100)) < 0) {  
-                    if (errno == ECONNRESET) {  
-                        CloseConn(epfd, sockfd, wait_evs[i].data.ptr);
-                        printf("[%u]fd = %d, close, error = %s\n", (unsigned)pthread_self(), sockfd, strerror(errno));
-                        continue;
-                    } else  
-                        printf("[%u]read error, fd = %d, error = %s\n",
-                                (unsigned)pthread_self(), sockfd, strerror(errno));
-                } else if (task->n == 0) {  
-                    CloseConn(epfd, sockfd, wait_evs[i].data.ptr);
-                    printf("[%u]fd = %d, close, error = %s\n", (unsigned)pthread_self(), sockfd, strerror(errno));
-                    continue;
+            {
+                printf("[%u]EPOLLIN, fd = %u\n",
+                        (unsigned)pthread_self(), wait_evs[i].data.fd);
+                int ret = ReadConn(wait_evs[i].data.ptr);
+                if (ret == 0) {
+                    printf("[%u]close, fd = %d, error = %s\n",
+                            (unsigned)pthread_self(), wait_evs[i].data.fd,
+                            strerror(errno));
+                } else if (ret < 0) {
+                    printf("[%u]read error, fd = %d, error = %s\n",
+                            (unsigned)pthread_self(), wait_evs[i].data.fd,
+                            strerror(errno));
                 }
                 else {
-                    task->buffer[task->n] = '\0';  
-                    printf("[%u]fd = %d, read = %s\n", (unsigned)pthread_self(), sockfd, task->buffer);
+                    printf("[%u]read success, fd = %d\n",
+                            (unsigned)pthread_self(), wait_evs[i].data.fd);
                 }
-
-                f_epoll_add(epfd, sockfd, EPOLLIN|EPOLLOUT|EPOLLET, wait_evs[i].data.ptr);
             }  
             else if (wait_evs[i].events & EPOLLOUT)  
-            {     
-                task_t* task = (task_t*)wait_evs[i].data.ptr;
-                int sockfd = task->fd;  
-                printf("[%u]EPOLLOUT, fd = %d\n", (unsigned)pthread_self(), sockfd);
-
-                if (task->n > 0) {
-                    write(sockfd, task->buffer, task->n);  
-                    task->n = 0;
-                    printf("[%u]fd = %d, write = %s\n", (unsigned)pthread_self(), sockfd, task->buffer);
-                }
-
-                f_epoll_add(epfd, sockfd, EPOLLIN|EPOLLOUT|EPOLLET, wait_evs[i].data.ptr);
+            {
+                printf("[%u]EPOLLOUT, fd = %d\n",
+                        (unsigned)pthread_self(), wait_evs[i].data.fd);
+                WriteConn(wait_evs[i].data.ptr);
             }  
         }  
     }  
@@ -418,7 +235,7 @@ int main(int argc, char** argv)
     else if (ret == 0) {
         //主进程
         while (true) {
-            sleep(5);
+            sleep(60);
             printf("==================5s===================\n");
         }
     }

@@ -39,8 +39,11 @@ endif
 	$(QUIET_CC)$(COMPILE) $(OUTPUT_OPTION) $<
 
 
-SRCS = src/server.c #\
-	   src/dictionary.c
+SRCS = src/server.c \
+	   src/conn.c \
+	   src/net.c \
+	   src/f_epoll.c \
+	   src/conf.c
 
 OBJS = $(SRCS:.c=.o)
 
