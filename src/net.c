@@ -3,11 +3,11 @@
 #include <arpa/inet.h>
 #include <unistd.h>  
 #include <fcntl.h>  
-#include <stdio.h>  
+#include <pthread.h>  
 #include <stdlib.h>  
 #include <string.h>
 #include <errno.h>  
-#include "conf.h"
+#include "common.h"
 #include "f_epoll.h"
 
 int setnonblocking(int sock)  
@@ -62,32 +62,37 @@ int tcplisten(int port, int backlog)
     return listenfd;
 }
 
-//typedef struct tcpserv_
-//{
-//    int fd;
-//    int epfd;
-//    int events;
-//} tcpserv;
-
 void tcpstart(int listenfd, int epfd)
 {
-    //printf("sizeof(tcpserv) = %d\n", sizeof(tcpserv));
-    //tcpserv* srv = (tcpserv*)malloc(sizeof(tcpserv));
-    //srv->fd = listenfd;
-    //srv->epfd = epfd;
-    //srv->events = EPOLLIN|EPOLLET;
     int events = EPOLLIN|EPOLLET;
     if (global_ini.nthreads_per_epoll > 1)
         events |= EPOLLONESHOT;
 
+    /**
+     * listen fd, 不能设置event.data.ptr
+     * ptr 和 fd只能设置一个，epoll_event是union类型
+     */
     f_epoll_add(epfd, listenfd, events, 0);
 }
 
-int tcpaccept(int listenfd, int epfd, struct sockaddr* clientaddr, socklen_t* clilen)
+int tcpaccept(int listenfd, int epfd)
 {
-    int connfd = accept(listenfd, clientaddr, clilen);
+    socklen_t clilen = sizeof(struct sockaddr_in);
+    struct sockaddr_in clientaddr;  
+
+    int connfd = accept(listenfd, (struct sockaddr*)&clientaddr, &clilen);
     if (connfd > 0) {
         setnonblocking(connfd);
+        zlog_info(lg, "[%u]new connection from %s:%d, fd = %d",
+            (unsigned)pthread_self(),
+            inet_ntoa(clientaddr.sin_addr), 
+            ntohs(clientaddr.sin_port),
+            connfd);
+
+    }
+    else {
+        zlog_error(lg, "[%u]accept fail, listenfd = %d, error = %s",
+            (unsigned)pthread_self(), listenfd, strerror(errno));
     }
 
     if (global_ini.nthreads_per_epoll > 1) {

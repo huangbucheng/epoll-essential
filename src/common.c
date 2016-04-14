@@ -1,7 +1,8 @@
-#include "conf.h"
+#include "common.h"
 #include "iniparser.h"
 
 struct ini_s global_ini;
+zlog_category_t *lg;//日志
 
 int loadconfig(const char* ini_name)
 {
@@ -13,6 +14,7 @@ int loadconfig(const char* ini_name)
         return -1 ;
     }
     iniparser_dump(ini, stdout);
+    global_ini.cfg_file = iniparser_getstring(ini, "log.cfg_file", 0);
     global_ini.listen_port = iniparser_getint(ini, "listen:port", -1);
     global_ini.backlog = iniparser_getint(ini, "listen:backlog", 1);
     global_ini.nworkers = iniparser_getint(ini, "concurrency:nworkers", 1);

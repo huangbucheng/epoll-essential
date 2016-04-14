@@ -1,5 +1,6 @@
 #include "f_epoll.h"
-#include <stdio.h>
+#include "common.h"
+#include <pthread.h>
 
 int f_epoll_add(int epfd, int fd, int events, void* ptr)
 {
@@ -25,19 +26,35 @@ int f_epoll_add(int epfd, int fd, int events, void* ptr)
      * EPOLLET：       将EPOLL设为边缘触发(Edge Triggered)模式，这是相对于水平触发(Level Triggered)来说的。
      * EPOLLONESHOT：  只监听一次事件，当监听完这次事件之后，如果还需要继续监听这个socket的话，需要再次把这个socket加入到EPOLL队列里。
      */
-    //if (!ptr) {
-    //    return -1;
-    //}
 
     struct epoll_event ev;
-    ev.data.fd = fd;
-    ev.data.ptr = ptr;
+    /**
+     * ptr 和 fd只能设置一个，epoll_event是union类型
+     */
+    if (ptr) ev.data.ptr = ptr;
+    else ev.data.fd = fd;
     ev.events = events;
 
-    printf("epoll_ctl_add:epfd = %d, fd = %d, events = %u\n",
-            epfd, fd, events);
+    zlog_debug(lg, "[%u]epoll_ctl_add, epfd = %d, fd = %d, events = %u",
+            (unsigned)pthread_self(), epfd, fd, events);
     //注册epoll事件
     if (-1 ==epoll_ctl(epfd,EPOLL_CTL_ADD,fd,&ev))
+        return -1;
+
+    return 0;
+}
+
+int f_epoll_mod(int epfd, int fd, int events, void* ptr)
+{
+    struct epoll_event ev;
+    if (ptr) ev.data.ptr = ptr;
+    else ev.data.fd = fd;
+    ev.events = events;
+
+    zlog_debug(lg, "[%u]epoll_ctl_mod, epfd = %d, fd = %d, events = %u",
+            (unsigned)pthread_self(), epfd, fd, events);
+
+    if (-1 ==epoll_ctl(epfd,EPOLL_CTL_MOD,fd,&ev))
         return -1;
 
     return 0;

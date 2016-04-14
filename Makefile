@@ -14,8 +14,8 @@ endif
 
 CFLAGS += ${ADDITIONAL_CFLAGS}
 
-INCFLAGS ?= -I ./iniparser/src
-LINKFLAGS = -lpthread ./iniparser/libiniparser.a 
+INCFLAGS ?= -I ./iniparser/src -I ./zlog/src/
+LINKFLAGS = -lpthread ./iniparser/libiniparser.a -lzlog
 
 SHLD = ${CC} ${CFLAGS} 
 
@@ -43,7 +43,7 @@ SRCS = src/server.c \
 	   src/conn.c \
 	   src/net.c \
 	   src/f_epoll.c \
-	   src/conf.c
+	   src/common.c
 
 OBJS = $(SRCS:.c=.o)
 
