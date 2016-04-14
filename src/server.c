@@ -12,8 +12,6 @@
 #include "net.h"
 #include "conf.h"
 
-using namespace std;  
-
 int listenfd;
 
 /**
@@ -126,6 +124,8 @@ void WorkerRoutine()
     tcpstart(listenfd, epfds[0]);
     printf("listenfd = %d, epfd = %d\n",
             listenfd, epfds[0]);
+    printf("EPOLLIN = %d, EPOLLOUT = %d, EPOLLET = %u, EPOLLONESHOT = %u\n",
+            EPOLLIN, EPOLLOUT, EPOLLET, EPOLLONESHOT);
     ThreadRoutine((void*)epfds);
 }
 
@@ -134,9 +134,8 @@ void* ThreadRoutine(void* args)
     static int thread_no = 0;
     __sync_fetch_and_add(&thread_no, 1);
 
-    //struct epoll_event* wait_evs = (struct epoll_event*)malloc(global_ini.nconn_per_epoll * sizeof(struct epoll_event));
-    //memset((void*)wait_evs, 0, global_ini.nconn_per_epoll * sizeof(struct epoll_event));
-    struct epoll_event wait_evs[3];
+    static const int MAX_EVENTS = 3;
+    struct epoll_event wait_evs[MAX_EVENTS];
 
     int* epfds = (int*)args;
     int epfd = epfds[thread_no%global_ini.nepolls_per_worker];
@@ -144,7 +143,7 @@ void* ThreadRoutine(void* args)
             thread_no, (unsigned)pthread_self(), ::getpid(),
             epfd);
 
-    while(true)
+    while (1)
     {
         //等待epoll事件的发生  
         /**
@@ -154,34 +153,45 @@ void* ThreadRoutine(void* args)
          * @return 该函数返回需要处理的事件数目，如返回0表示已超时。
          *         返回的事件集合在events数组中，数组中实际存放的成员个数是函数的返回值。返回0表示已经超时。
          */
-        //int nfds = epoll_wait(epfd, wait_evs, global_ini.nconn_per_epoll, 20);  
-        int nfds = epoll_wait(epfd, wait_evs, 3, 20);  
+        int nfds = epoll_wait(epfd, wait_evs, MAX_EVENTS, -1);  
         int conns = 0;
 
         //处理所发生的所有事件
         for(int i = 0; i < nfds; ++i)
         {
-            if (wait_evs[i].data.fd == listenfd)
+            printf("%u %d %d\n", wait_evs[i].data.fd, listenfd, wait_evs[i].events);
+
+            if ((wait_evs[i].events & EPOLLERR) ||
+                (wait_evs[i].events & EPOLLHUP) ||
+                (!(wait_evs[i].events & EPOLLIN)))
+            {  
+                /* An error has occured on this fd, or the socket is not 
+                 *                  ready for reading (why were we notified then?) */  
+                fprintf (stderr, "epoll error\n");  
+                //close(events[i].data.fd);  
+                continue;  
+            }
+            else if (wait_evs[i].data.fd == listenfd)
             {
                 socklen_t clilen;  
                 struct sockaddr_in clientaddr;  
-                int connfd = tcpaccept(listenfd, wait_evs[i].data.ptr,
+                int connfd = tcpaccept(listenfd, epfd,
                         (struct sockaddr*)&clientaddr, &clilen);
                 if (connfd < 0) {
                     printf("[%u]accept fail, listenfd = %d, error = %s\n",
-                        (unsigned)pthread_self(), listenfd, strerror(errno));
+                            (unsigned)pthread_self(), listenfd, strerror(errno));
                     continue;
                 }else {
                     ++conns;
                     printf("[%u]new connection from %s:%d, fd = %d, conns = %d\n",
-                        (unsigned)pthread_self(),
-                        inet_ntoa(clientaddr.sin_addr), 
-                        ntohs(clientaddr.sin_port),
-                        connfd, conns);
+                            (unsigned)pthread_self(),
+                            inet_ntoa(clientaddr.sin_addr), 
+                            ntohs(clientaddr.sin_port),
+                            connfd, conns);
                 }
 
                 DispatchConn(connfd, epfds);
-            }  
+            }
             else if (wait_evs[i].events & EPOLLIN)  
             {
                 printf("[%u]EPOLLIN, fd = %u\n",
@@ -200,15 +210,15 @@ void* ThreadRoutine(void* args)
                     printf("[%u]read success, fd = %d\n",
                             (unsigned)pthread_self(), wait_evs[i].data.fd);
                 }
-            }  
+            }
             else if (wait_evs[i].events & EPOLLOUT)  
             {
                 printf("[%u]EPOLLOUT, fd = %d\n",
                         (unsigned)pthread_self(), wait_evs[i].data.fd);
                 WriteConn(wait_evs[i].data.ptr);
-            }  
-        }  
-    }  
+            }
+        }
+    }
 
     return ((void *)0);
 }

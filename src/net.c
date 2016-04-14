@@ -22,7 +22,7 @@ int setnonblocking(int sock)
     opts |= O_NONBLOCK;  
     if (fcntl(sock,F_SETFL,opts) < 0) {
         perror("fcntl(sock,SETFL,opts)");  
-        return -1;  
+        return -1;
     }
     return 0;
 }
@@ -40,6 +40,7 @@ int tcplisten(int port, int backlog)
         perror("socket");  
         return -1;
     }
+    bind(listenfd,(sockaddr *)&serveraddr, sizeof(serveraddr));  
 
     // 地址重用  
     int nOptVal = 1;  
@@ -57,40 +58,42 @@ int tcplisten(int port, int backlog)
         return -1;
     }
 
-    bind(listenfd,(sockaddr *)&serveraddr, sizeof(serveraddr));  
     listen(listenfd, backlog);
     return listenfd;
 }
 
-typedef struct tcpserv_
-{
-    int fd;
-    int epfd;
-    int events;
-} tcpserv;
+//typedef struct tcpserv_
+//{
+//    int fd;
+//    int epfd;
+//    int events;
+//} tcpserv;
 
 void tcpstart(int listenfd, int epfd)
 {
-    tcpserv* srv = (tcpserv*)malloc(sizeof(tcpserv));
-    srv->fd = listenfd;
-    srv->epfd = epfd;
-    srv->events = EPOLLIN;//|EPOLLET;
+    //printf("sizeof(tcpserv) = %d\n", sizeof(tcpserv));
+    //tcpserv* srv = (tcpserv*)malloc(sizeof(tcpserv));
+    //srv->fd = listenfd;
+    //srv->epfd = epfd;
+    //srv->events = EPOLLIN|EPOLLET;
+    int events = EPOLLIN|EPOLLET;
     if (global_ini.nthreads_per_epoll > 1)
-        srv->events |= EPOLLONESHOT;
+        events |= EPOLLONESHOT;
 
-    f_epoll_add(epfd, listenfd, srv->events, srv);
+    f_epoll_add(epfd, listenfd, events, 0);
 }
 
-int tcpaccept(int listenfd, void * ptr, struct sockaddr* clientaddr, socklen_t* clilen)
+int tcpaccept(int listenfd, int epfd, struct sockaddr* clientaddr, socklen_t* clilen)
 {
     int connfd = accept(listenfd, clientaddr, clilen);
     if (connfd > 0) {
         setnonblocking(connfd);
     }
 
-    if (((tcpserv*)ptr)->events & EPOLLONESHOT)
-        f_epoll_add(((tcpserv*)ptr)->epfd, listenfd,
-                ((tcpserv*)ptr)->events, ptr);
+    if (global_ini.nthreads_per_epoll > 1) {
+        int events = EPOLLIN|EPOLLET|EPOLLONESHOT;
+        f_epoll_add(epfd, listenfd, events, 0);
+    }
 
     return connfd;
 }

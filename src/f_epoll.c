@@ -1,4 +1,5 @@
 #include "f_epoll.h"
+#include <stdio.h>
 
 int f_epoll_add(int epfd, int fd, int events, void* ptr)
 {
@@ -24,17 +25,20 @@ int f_epoll_add(int epfd, int fd, int events, void* ptr)
      * EPOLLET：       将EPOLL设为边缘触发(Edge Triggered)模式，这是相对于水平触发(Level Triggered)来说的。
      * EPOLLONESHOT：  只监听一次事件，当监听完这次事件之后，如果还需要继续监听这个socket的话，需要再次把这个socket加入到EPOLL队列里。
      */
-    if (!ptr) {
-        return -1;
-    }
+    //if (!ptr) {
+    //    return -1;
+    //}
 
     struct epoll_event ev;
     ev.data.fd = fd;
     ev.data.ptr = ptr;
     ev.events = events;
 
+    printf("epoll_ctl_add:epfd = %d, fd = %d, events = %u\n",
+            epfd, fd, events);
     //注册epoll事件
-    epoll_ctl(epfd,EPOLL_CTL_ADD,fd,&ev);
+    if (-1 ==epoll_ctl(epfd,EPOLL_CTL_ADD,fd,&ev))
+        return -1;
 
     return 0;
 }
