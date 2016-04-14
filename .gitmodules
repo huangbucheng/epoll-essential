@@ -1,0 +1,6 @@
+[submodule "iniparser"]
+	path = iniparser
+	url = https://github.com/ndevilla/iniparser.git
+[submodule "zlog"]
+	path = zlog
+	url = https://github.com/huangbucheng/zlog.git
