@@ -9,6 +9,7 @@
 #include <errno.h>  
 #include "common.h"
 #include "f_epoll.h"
+#include "conn.h"
 
 int setnonblocking(int sock)  
 {  
@@ -75,24 +76,25 @@ void tcpstart(int listenfd, int epfd)
     f_epoll_add(epfd, listenfd, events, 0);
 }
 
-int tcpaccept(int listenfd, int epfd)
+int tcpaccept(int listenfd, int epfd, int * epfds)
 {
-    socklen_t clilen = sizeof(struct sockaddr_in);
-    struct sockaddr_in clientaddr;  
+    socklen_t addrlen = sizeof(struct sockaddr_in);
+    struct sockaddr_in remote;  
 
-    int connfd = accept(listenfd, (struct sockaddr*)&clientaddr, &clilen);
-    if (connfd > 0) {
-        setnonblocking(connfd);
-        zlog_info(lg, "[%u]new connection from %s:%d, fd = %d",
-            (unsigned)pthread_self(),
-            inet_ntoa(clientaddr.sin_addr), 
-            ntohs(clientaddr.sin_port),
-            connfd);
-
+    int conn_fd;
+    while ((conn_fd = accept(listenfd,(struct sockaddr *) &remote, &addrlen)) > 0) {
+        setnonblocking(conn_fd);
+        DispatchConn(conn_fd, epfds);
+        zlog_info(lg, "[%u] new connection from %s:%d, fd = %d",
+                (unsigned)pthread_self(),
+                inet_ntoa(remote.sin_addr), 
+                ntohs(remote.sin_port),
+                conn_fd);
     }
-    else {
-        zlog_error(lg, "[%u]accept fail, listenfd = %d, error = %s",
-            (unsigned)pthread_self(), listenfd, strerror(errno));
+    if (conn_fd == -1) {
+        if (errno != EAGAIN && errno != ECONNABORTED && errno != EPROTO && errno != EINTR)
+        zlog_error(lg, "[%u] accept fail, listenfd = %d, error = %s",
+                (unsigned)pthread_self(), listenfd, strerror(errno));
     }
 
     if (global_ini.nthreads_per_epoll > 1) {
@@ -100,6 +102,6 @@ int tcpaccept(int listenfd, int epfd)
         f_epoll_add(epfd, listenfd, events, 0);
     }
 
-    return connfd;
+    return conn_fd;
 }
 

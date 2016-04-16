@@ -140,8 +140,8 @@ void* ThreadRoutine(void* args)
 
     int* epfds = (int*)args;
     int epfd = epfds[thread_no%global_ini.nepolls_per_worker];
-    zlog_info(lg, "thread #%d(%u) of worker %d, epfd = %d!",
-            thread_no, (unsigned)pthread_self(), ::getpid(),
+    zlog_info(lg, "[%u] thread #%d of worker %d, epfd = %d!",
+            (unsigned)pthread_self(), thread_no, ::getpid(),
             epfd);
 
     while (1)
@@ -161,12 +161,8 @@ void* ThreadRoutine(void* args)
         {
             if (wait_evs[i].data.fd == listenfd)
             {
-                int connfd = tcpaccept(listenfd, epfd);
-                if (connfd < 0) {
-                    continue;
-                }
-
-                DispatchConn(connfd, epfds);
+                tcpaccept(listenfd, epfd, epfds);
+                continue;
             }
             else if ((wait_evs[i].events & EPOLLERR) ||
                     (wait_evs[i].events & EPOLLHUP))
@@ -175,15 +171,29 @@ void* ThreadRoutine(void* args)
                  * An error has occured on this fd
                  */
                 CloseConn(wait_evs[i].data.ptr);
+                continue;
             }
-            else if (wait_evs[i].events & EPOLLIN)  
+            
+            //zlog_debug(lg, "[%u] events = %d",
+            //    (unsigned)pthread_self(), wait_evs[i].events);
+
+            if (wait_evs[i].events & EPOLLIN)
             {
-                ReadConn(wait_evs[i].data.ptr);
+                if (0 == ReadConn(wait_evs[i].data.ptr)) {
+                    //connection closed
+                    continue;
+                }
             }
-            else if (wait_evs[i].events & EPOLLOUT)  
+
+            if (wait_evs[i].events & EPOLLOUT)
             {
-                WriteConn(wait_evs[i].data.ptr);
+                if (0 == WriteConn(wait_evs[i].data.ptr)) {
+                    //connection closed
+                    continue;
+                }
             }
+
+            RegConn(wait_evs[i].data.ptr);
         }
     }
 
