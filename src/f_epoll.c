@@ -35,7 +35,7 @@ int f_epoll_add(int epfd, int fd, int events, void* ptr)
     else ev.data.fd = fd;
     ev.events = events;
 
-    zlog_debug(lg, "[%u]epoll_ctl_add, epfd = %d, fd = %d, events = %u",
+    zlog_debug(lg, "[%u] epoll_ctl_add, epfd = %d, fd = %d, events = %u",
             (unsigned)pthread_self(), epfd, fd, events);
     //注册epoll事件
     if (-1 ==epoll_ctl(epfd,EPOLL_CTL_ADD,fd,&ev))
@@ -51,7 +51,7 @@ int f_epoll_mod(int epfd, int fd, int events, void* ptr)
     else ev.data.fd = fd;
     ev.events = events;
 
-    zlog_debug(lg, "[%u]epoll_ctl_mod, epfd = %d, fd = %d, events = %u",
+    zlog_debug(lg, "[%u] epoll_ctl_mod, epfd = %d, fd = %d, events = %u",
             (unsigned)pthread_self(), epfd, fd, events);
 
     if (-1 ==epoll_ctl(epfd,EPOLL_CTL_MOD,fd,&ev))

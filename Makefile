@@ -1,7 +1,8 @@
 #
 # Server Makefile
 #
-
+#eg. make DEBUG=1
+#eg. make 
 # Compiler settings
 CC      = g++
 

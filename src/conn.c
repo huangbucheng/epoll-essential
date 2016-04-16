@@ -14,7 +14,7 @@ void DispatchConn(int connfd, int * epfds)
 {
     task_t* task = (task_t*)malloc(sizeof(task_t));
     task->fd = connfd;
-    task->n = 0;
+    task->out_sz = 0;
     task->events = EPOLLIN|EPOLLET;
     if (global_ini.nthreads_per_epoll > 1)
         SET_ONESHOT(task);
@@ -26,57 +26,75 @@ void DispatchConn(int connfd, int * epfds)
 
 int ReadConn(void * ptr)
 {
+    if (!ptr) return -1;
+
     task_t* task = (task_t*)ptr;
     int sockfd = task->fd;
 
-    if ( (task->n = read(sockfd, task->buffer, 100)) < 0) {  
+    int offset = 0, nread = 0;
+    while ((nread = read(sockfd, task->buffer + offset, BUF_SZ-offset)) > 0) {
+        offset += nread;
+    }
+    if (nread == -1 && errno != EAGAIN) {
         if (errno == ECONNRESET) {  
             CloseConn(ptr);
             return 0;
         } else {
-            zlog_error(lg, "[%u]read error, fd = %d, error = %s",
-                (unsigned)pthread_self(), sockfd,
-                strerror(errno));
+            //丢弃已读数据
+            zlog_error(lg, "[%u] read error, fd = %d, error = %s",
+                    (unsigned)pthread_self(), sockfd,
+                    strerror(errno));
 
             return -1;
         }
-    } else if (task->n == 0) {
+    }
+    else if (offset > 0) {
+        memcpy(task->out, task->buffer, offset);
+        task->out_sz = offset;
+        zlog_debug(lg, "[%u] read success (%d), fd = %d",
+                (unsigned)pthread_self(), offset, sockfd);
+    }
+    else if (offset == 0) {
         CloseConn(ptr);
         return 0;
     }
-    else {
-        task->buffer[task->n] = '\0';
-        zlog_debug(lg, "[%u]read success (%s), fd = %d",
-            (unsigned)pthread_self(), task->buffer, sockfd);
-
-    }
 
     task->events |= EPOLLOUT;
-    if (IS_ONESHOT(task)) //需要再次注册
-        f_epoll_add(task->epfd, sockfd, task->events, ptr);
-    else
-        f_epoll_mod(task->epfd, sockfd, task->events, ptr);
 
-    return task->n;
+    return offset;
 }
 
 int WriteConn(void * ptr)
 {
+    if (!ptr) return -1;
+
     task_t* task = (task_t*)ptr;
     int sockfd = task->fd;
 
-    if (task->n > 0) {
-        zlog_debug(lg, "[%u]write (%s), fd = %d",
-            (unsigned)pthread_self(), task->buffer, sockfd);
-
-        write(sockfd, task->buffer, task->n);  
-        task->n = 0;
+    int offset = 0;
+    while (task->out_sz > offset) {
+        int nwrite = write(sockfd, task->out + offset,
+                task->out_sz - offset);
+        if (nwrite < task->out_sz - offset) {
+            if (nwrite == -1 && errno != EAGAIN) {
+                zlog_error(lg, "[%u] write fail, fd = %d, error = %s",
+                        (unsigned)pthread_self(), sockfd,
+                        strerror(errno));
+                CloseConn(ptr);
+                return 0;
+            }
+            break;
+        }
+        offset += nwrite;
     }
 
-    if (IS_ONESHOT(task)) //需要再次注册
-        f_epoll_add(task->epfd, sockfd, task->events, ptr);
+    if (offset > 0) {
+        zlog_debug(lg, "[%u] write success (%d), fd = %d",
+                (unsigned)pthread_self(), offset, sockfd);
+    }
+    task->out_sz = 0;
 
-    return task->n;
+    return offset;
 }
 
 void CloseConn(void* ptr)
@@ -85,9 +103,9 @@ void CloseConn(void* ptr)
 
     task_t* task = (task_t*)ptr;
 
-    zlog_debug(lg, "[%u]close, fd = %d, error = %s",
-        (unsigned)pthread_self(), task->fd,
-        strerror(errno));
+    zlog_debug(lg, "[%u] close, fd = %d, error = %s",
+            (unsigned)pthread_self(), task->fd,
+            strerror(errno));
 
     /**
      * the close of an fd cause it to be removed
@@ -98,5 +116,15 @@ void CloseConn(void* ptr)
     free(task);
 }
 
+void RegConn(void * ptr)
+{
+    if (!ptr) return;
+    task_t* task = (task_t*)ptr;
+    int sockfd = task->fd;
 
+    if (IS_ONESHOT(task)) //需要再次注册
+        f_epoll_add(task->epfd, sockfd, task->events, ptr);
+    else
+        f_epoll_mod(task->epfd, sockfd, task->events, ptr);
+}
 
